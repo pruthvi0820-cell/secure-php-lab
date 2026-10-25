@@ -1,0 +1,41 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM php:8.4-apache
+        RUN docker-php-ext-install pdo_mysql \
+         && cp /usr/local/etc/php/php.ini-production /usr/local/etc/php/php.ini \
+         && printf 'ServerTokens Prod\nServerSignature Off\n' > /etc/apache2/conf-enabled/zz-hide-version.conf
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./public:/var/www/html
+      - ./src:/var/www/src:ro
+    environment:
+      DB_HOST: db
+      DB_NAME: ${DB_NAME:?set DB_NAME in .env}
+      DB_USER: ${DB_USER:?set DB_USER in .env}
+      DB_PASS: ${DB_PASS:?set DB_PASS in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:?set DB_NAME in .env}
+      MYSQL_USER: ${DB_USER:?set DB_USER in .env}
+      MYSQL_PASSWORD: ${DB_PASS:?set DB_PASS in .env}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS:?set DB_ROOT_PASS in .env}
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./users.sql:/docker-entrypoint-initdb.d/02-users.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u\"$$MYSQL_USER\" -p\"$$MYSQL_PASSWORD\""]
+      interval: 5s
+      retries: 20
+
+volumes:
+  dbdata:

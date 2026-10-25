@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(30) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(30) NOT NULL,
+  ip VARCHAR(45) NOT NULL,
+  attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (username, attempted_at),
+  INDEX (ip, attempted_at)
+);
