@@ -10,6 +10,13 @@ Built by Pruthvi DR while learning PHP, with AI guidance (Claude).
 - **Contact form** that validates input and saves messages to MySQL
 - **Admin login** (the first account created becomes the admin; registration then closes)
 - **Messages page** visible only to the logged-in admin, with search
+- **Security gateway** in front of the app: a web application firewall (WAF) that blocks attacks
+  before they reach PHP
+
+```
+Browser ──► Gateway: nginx + ModSecurity + OWASP Core Rule Set ──► PHP 8.4 ──► MySQL 8.4
+            (the only open port)                                    (hidden)    (hidden)
+```
 
 ## Security features
 
@@ -26,6 +33,9 @@ Built by Pruthvi DR while learning PHP, with AI guidance (Claude).
 | Information leaks | Generic error messages (details only in server logs), no PHP/Apache version in headers, production `php.ini` | `compose.yaml` |
 | Secrets in source code | Passwords in `.env` (ignored by Git), code outside the web root | `.env.example`, `src/` |
 | Malformed input (arrays instead of text) | `post_string()` treats anything that is not text as empty | `src/auth.php` |
+| Attacks reaching the app at all | WAF (OWASP CRS 4.30, paranoia level 1) blocks SQLi, XSS, traversal, PHP/command injection, scanners and bodies over 2 MB with a 403 | `compose.yaml` |
+| Direct access to PHP or MySQL | Only the gateway publishes a port; PHP and MySQL sit on Docker's private network | `compose.yaml` |
+| Spoofed visitor IP | Apache `mod_remoteip` trusts `X-Real-IP` only from Docker's private network, so brute-force limits use the real IP | `compose.yaml` |
 
 ## Run it
 
@@ -42,6 +52,35 @@ http://localhost:8080/contact.php and http://localhost:8080/messages.php.
 
 The app listens on `127.0.0.1` only, so it is not reachable from other devices on the network.
 
+## Security gateway (WAF)
+
+The gateway is the official `owasp/modsecurity-crs` image (nginx + ModSecurity v3 + OWASP Core Rule Set).
+Each request gets an anomaly score from about 850 rules; at 5 or more it is refused with **403** and PHP
+never sees it.
+
+**Tuning false positives.** At first the WAF also blocked real users: a recruiter writing
+*"Saw your post about blocking ' OR '1'='1 attacks"*, and a strong password containing `' OR`.
+Instead of switching rules off globally, [`gateway/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf`](gateway/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf)
+makes two narrow exceptions, each with the reason it is safe:
+
+| Rule | Exception | Why it is safe |
+|---|---|---|
+| 1000 | Do not inspect `password` / `confirm` on `login.php` and `register.php` | Passwords are only ever hashed, never put into SQL or HTML |
+| 1001 | Skip SQLi, XSS and file-path checks on the `message` field of `contact.php` only | The app stores it with a prepared statement and prints it with `htmlspecialchars()` |
+
+Command-injection and PHP-injection checks stay on for every field. A message containing
+`; cat /etc/passwd` is still blocked: an accepted trade-off.
+
+**Automated attack test.** With the stack running:
+
+```bash
+python tests/gateway_test.py
+```
+
+It sends 26 requests (15 attacks, 7 normal visits, 4 tuning cases) and prints PASS/FAIL for each.
+Behind the gateway all 26 pass; pointed straight at PHP without the WAF, only 10 do.
+Reading why a request was blocked: `docker compose logs proxy --tail 5` (look for `ruleId` and `message`).
+
 ## Project layout
 
 ```
@@ -51,8 +90,10 @@ src/         code that is never served directly
   bootstrap.php   loads helpers and sends security headers on every page
   auth.php        sessions, CSRF tokens, brute-force limits
   db.php          database connection (settings from environment variables)
+gateway/     WAF tuning rules (REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf)
+tests/       gateway_test.py: automated attack and false-positive test
 init.sql, users.sql   database tables (loaded automatically on first start)
-compose.yaml          PHP 8.4 + Apache and MySQL 8.4
+compose.yaml          WAF gateway, PHP 8.4 + Apache, MySQL 8.4
 ```
 
 ## Manual security tests
@@ -71,4 +112,5 @@ compose.yaml          PHP 8.4 + Apache and MySQL 8.4
 ## Not production-ready (yet)
 
 This is a learning project. A real deployment would also need HTTPS (and the cookie `secure` flag),
-a proper rate limiter behind a reverse proxy, email verification and password reset, and automated tests.
+rate limiting at the gateway, two-factor login, email verification and password reset, and unit tests.
+The next steps of this project add rate limiting, a zero-trust login (Authelia with 2FA) and HTTPS.
