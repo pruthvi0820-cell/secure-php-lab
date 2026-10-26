@@ -1,4 +1,14 @@
 services:
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./logs:/var/log/nginx
+    depends_on:
+      - web
+
   web:
     build:
       context: .
@@ -6,9 +16,10 @@ services:
         FROM php:8.4-apache
         RUN docker-php-ext-install pdo_mysql \
          && cp /usr/local/etc/php/php.ini-production /usr/local/etc/php/php.ini \
-         && printf 'ServerTokens Prod\nServerSignature Off\n' > /etc/apache2/conf-enabled/zz-hide-version.conf
-    ports:
-      - "127.0.0.1:8080:80"
+         && printf 'ServerTokens Prod\nServerSignature Off\nServerName localhost\n' > /etc/apache2/conf-enabled/zz-hide-version.conf \
+         && a2enmod remoteip \
+         && printf 'RemoteIPHeader X-Real-IP\nRemoteIPInternalProxy 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16\n' > /etc/apache2/conf-enabled/zz-remoteip.conf
+    # No "ports:" here any more. PHP is only reachable through the proxy, inside Docker's private network.
     volumes:
       - ./public:/var/www/html
       - ./src:/var/www/src:ro
