@@ -7,9 +7,12 @@ Run it while `docker compose up` is running:
 
 Only run it against your own lab. It sends well-known attack strings, not real exploits.
 The contact-form tests save a few messages named "WAF-Test" in your database.
+The last two tests trip the rate limits on purpose: for about a minute afterwards,
+logging in from this computer may show "Slow down, please". That is the gateway working.
 """
 
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,7 +30,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def status(path, query=None, form=None, raw_body=None, agent=UA):
+def fetch(path, query=None, form=None, raw_body=None, agent=UA):
+    """Return (status code, body text, headers) without following redirects."""
+    time.sleep(0.06)                     # stay under the gateway's per-visitor rate limit
     url = BASE + path
     if query is not None:
         url += "?" + (query if isinstance(query, str) else urllib.parse.urlencode(query))
@@ -37,20 +42,56 @@ def status(path, query=None, form=None, raw_body=None, agent=UA):
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
         with OPENER.open(req, timeout=15) as r:
-            return r.status
+            return r.status, r.read().decode("utf-8", "replace"), r.headers
     except urllib.error.HTTPError as e:
-        return e.code
+        return e.code, e.read().decode("utf-8", "replace"), e.headers
     except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
         if raw_body is not None:         # the gateway may cut off an oversized upload mid-send
-            return 413
+            return 413, "", {}
         raise SystemExit(f"Cannot reach {BASE}: {e}\nIs `docker compose up` running?")
+
+
+def status(*args, **kwargs):
+    return fetch(*args, **kwargs)[0]
+
+
+def custom_block_page():
+    """A blocked request must show our page, not nginx's default (which names the software)."""
+    code, body, headers = fetch("/", {"visitor": "<script>alert(1)</script>"})
+    if code == 403 and "Your request was blocked" in body and "nginx" not in body.lower() and not headers.get("Server"):
+        return 403
+    return 599                           # anything else counts as a failure
+
+
+def login_rate_limit():
+    """Rapid password guessing from one address must hit 429 before PHP is even asked."""
+    codes = [status("/login.php", form={"username": "rate-test", "password": "guess", "csrf": "x"}) for _ in range(12)]
+    return 429 if 429 in codes else codes[-1]
+
+
+def flood_rate_limit():
+    """A burst of 150 requests in parallel must be partly refused with 429."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(_):
+        req = urllib.request.Request(BASE + "/style.css", headers={"User-Agent": UA})
+        try:
+            with OPENER.open(req, timeout=15) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        codes = list(pool.map(one, range(150)))
+    time.sleep(3)                        # let the bucket refill
+    return 429 if 429 in codes and 200 in codes else 599
 
 
 def message(text):
     return {**FORM, "message": text}
 
 
-BLOCK, ALLOW = "blocked", "allowed"
+BLOCK, ALLOW, LIMIT = "blocked", "allowed", "rate-limited"
 CASES = [
     # (group, description, expected, request)
     ("Attack", "XSS: <script> in a URL parameter", BLOCK, lambda: status("/", {"visitor": "<script>alert(1)</script>"})),
@@ -91,6 +132,14 @@ CASES = [
      lambda: status("/login.php", form={"username": "admin", "password": "Sunset' OR 2024--x", "csrf": "x"})),
     ("Tuned", "Message with ; cat /etc/passwd stays blocked (on purpose)", BLOCK,
      lambda: status("/contact.php", form=message("Your traversal demo; cat /etc/passwd was clever."))),
+
+    ("G3", "Blocked visitors see our own page (no 'nginx', no Server header)", BLOCK, custom_block_page),
+    ("G3", "Webshell: /uploads/shell.php?cmd=id", BLOCK, lambda: status("/uploads/shell.php", {"cmd": "id"})),
+    ("G3", "Webshell: /images/avatar.phtml", BLOCK, lambda: status("/images/avatar.phtml")),
+    ("G3", "Error pages cannot be opened directly", ALLOW, lambda: status("/errors/blocked.html")),
+    ("G3", "Health check for monitoring: /healthz", ALLOW, lambda: status("/healthz")),
+    ("G3", "Password guessing: 12 fast logins get 429", LIMIT, login_rate_limit),
+    ("G3", "Flood: 150 parallel requests get some 429", LIMIT, flood_rate_limit),
 ]
 
 
@@ -99,8 +148,10 @@ def main():
     failures = 0
     for group, text, expected, run in CASES:
         code = run()
-        got = BLOCK if code in (403, 413) else ALLOW
+        got = BLOCK if code in (403, 413) else LIMIT if code == 429 else ALLOW
         ok = got == expected and code < 500
+        if expected == ALLOW and code == 429 and group == "Tuned":
+            ok = True                    # a rate limit left over from an earlier run is not a WAF failure
         failures += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {group:<6}  {code}  {text}" + ("" if ok else f"   (expected {expected})"))
     print(f"\n{len(CASES) - failures}/{len(CASES)} passed")

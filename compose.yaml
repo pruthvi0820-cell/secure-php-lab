@@ -15,6 +15,11 @@ services:
       MODSEC_AUDIT_LOG: "/dev/stdout"
     volumes:
       - ./gateway/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:ro
+      # G3: rate limits, custom block pages, ban list, webshell rule
+      - ./gateway/nginx/zz-gateway.conf.template:/etc/nginx/templates/conf.d/zz-gateway.conf.template:ro
+      - ./gateway/nginx/location_common.conf.template:/etc/nginx/templates/includes/location_common.conf.template:ro
+      - ./gateway/deny.conf:/etc/nginx/gateway/deny.conf:ro
+      - ./gateway/errors:/usr/share/nginx/gateway/errors:ro
     depends_on:
       - web
 

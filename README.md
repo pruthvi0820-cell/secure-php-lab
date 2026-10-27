@@ -35,6 +35,9 @@ Browser ──► Gateway: nginx + ModSecurity + OWASP Core Rule Set ──► P
 | Malformed input (arrays instead of text) | `post_string()` treats anything that is not text as empty | `src/auth.php` |
 | Attacks reaching the app at all | WAF (OWASP CRS 4.30, paranoia level 1) blocks SQLi, XSS, traversal, PHP/command injection, scanners and bodies over 2 MB with a 403 | `compose.yaml` |
 | Direct access to PHP or MySQL | Only the gateway publishes a port; PHP and MySQL sit on Docker's private network | `compose.yaml` |
+| Floods and password guessing | Gateway rate limits: 20 requests/s per visitor, 10 login attempts/min per visitor, then **429** | `gateway/nginx/` |
+| Webshells | A PHP file requested from an upload or media folder is refused at the gateway | `gateway/nginx/location_common.conf.template` |
+| Known attackers | Ban list (`deny` lines) checked before anything else; candidates found with PHPGuard | `gateway/deny.conf` |
 | Spoofed visitor IP | Apache `mod_remoteip` trusts `X-Real-IP` only from Docker's private network, so brute-force limits use the real IP | `compose.yaml` |
 
 ## Run it
@@ -71,14 +74,30 @@ makes two narrow exceptions, each with the reason it is safe:
 Command-injection and PHP-injection checks stay on for every field. A message containing
 `; cat /etc/passwd` is still blocked: an accepted trade-off.
 
+**Warn, slow down, ban (G3).** Blocked visitors get the gateway's own page
+([`gateway/errors/blocked.html`](gateway/errors/blocked.html)) instead of nginx's default, which named the
+software; it explains what happened and shows the time to quote to the site owner. Visitors who send too
+many requests get a *"Slow down, please"* page with status 429. Addresses you decide to ban go in
+[`gateway/deny.conf`](gateway/deny.conf) and see the same block page.
+
+**Finding attackers with PHPGuard.** The gateway's access log is in the standard "combined" format, so
+[PHPGuard](https://github.com/pruthvi0820-cell/phpguard) can read it:
+
+```bash
+docker compose logs proxy --no-log-prefix > logs/gateway.log
+python -m phpguard logs logs/gateway.log --canary /db_backup.sql --blocklist logs/block.txt
+```
+
+Review `logs/block.txt` by hand before copying an address into `gateway/deny.conf` as `deny <ip>;`.
+
 **Automated attack test.** With the stack running:
 
 ```bash
 python tests/gateway_test.py
 ```
 
-It sends 26 requests (15 attacks, 7 normal visits, 4 tuning cases) and prints PASS/FAIL for each.
-Behind the gateway all 26 pass; pointed straight at PHP without the WAF, only 10 do.
+It runs 33 checks (15 attacks, 7 normal visits, 4 tuning cases, 7 gateway checks: block page, webshells,
+health check, login and flood rate limits) and prints PASS/FAIL for each.
 Reading why a request was blocked: `docker compose logs proxy --tail 5` (look for `ruleId` and `message`).
 
 ## Project layout
@@ -90,7 +109,8 @@ src/         code that is never served directly
   bootstrap.php   loads helpers and sends security headers on every page
   auth.php        sessions, CSRF tokens, brute-force limits
   db.php          database connection (settings from environment variables)
-gateway/     WAF tuning rules (REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf)
+gateway/     WAF tuning rules (REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf), nginx rate limits
+             and shared rules (nginx/), ban list (deny.conf), block pages (errors/)
 tests/       gateway_test.py: automated attack and false-positive test
 init.sql, users.sql   database tables (loaded automatically on first start)
 compose.yaml          WAF gateway, PHP 8.4 + Apache, MySQL 8.4
@@ -112,5 +132,5 @@ compose.yaml          WAF gateway, PHP 8.4 + Apache, MySQL 8.4
 ## Not production-ready (yet)
 
 This is a learning project. A real deployment would also need HTTPS (and the cookie `secure` flag),
-rate limiting at the gateway, two-factor login, email verification and password reset, and unit tests.
-The next steps of this project add rate limiting, a zero-trust login (Authelia with 2FA) and HTTPS.
+two-factor login, email verification and password reset, and unit tests.
+The next steps of this project add a zero-trust login (Authelia with 2FA) and HTTPS.

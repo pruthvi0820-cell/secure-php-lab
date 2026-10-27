@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Request blocked</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f5f6f8; color: #1d2330; margin: 0; }
+  main { max-width: 560px; margin: 12vh auto; padding: 32px; background: #fff; border-radius: 12px;
+         border-top: 6px solid #b00020; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+  h1 { margin-top: 0; font-size: 1.5rem; }
+  .meta { color: #5b6475; font-size: .9rem; border-top: 1px solid #e3e6eb; padding-top: 12px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Your request was blocked</h1>
+  <p>The security gateway stopped this request because it matched a known attack pattern,
+     or because your address is on the block list.</p>
+  <p><strong>Are you a real visitor?</strong> Go back and try again without special characters
+     such as quotes or angle brackets. If it keeps happening, contact the site owner and
+     mention the time below.</p>
+  <p class="meta">Error 403 &middot; <!--# config timefmt="%d %b %Y, %H:%M:%S UTC" --><!--# echo var="date_gmt" --></p>
+</main>
+</body>
+</html>

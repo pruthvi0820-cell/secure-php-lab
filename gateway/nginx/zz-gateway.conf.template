@@ -1,0 +1,15 @@
+# G3: rate limits. This file is loaded at the "http" level of nginx.
+# Visitors are counted by their real IP address.
+
+# Every page: up to 20 requests per second per visitor (a normal page view needs only a few).
+limit_req_zone $binary_remote_addr zone=per_ip:10m rate=20r/s;
+
+# Login attempts: only POST requests count, at most 10 per minute per visitor.
+map $request_method $login_post_key {
+    POST    $binary_remote_addr;
+    default "";                       # an empty key is never limited, so GET (viewing the page) is free
+}
+limit_req_zone $login_post_key zone=login_post:10m rate=10r/m;
+
+limit_req_status 429;                 # "Too Many Requests"
+limit_req_log_level warn;
