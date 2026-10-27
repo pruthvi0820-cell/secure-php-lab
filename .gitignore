@@ -1,7 +1,8 @@
 # Secrets: never commit these
 .env
 
-# Logs
+# Logs and PHPGuard output (may contain visitor IP addresses)
 *.log
+logs/
 # Python cache
 __pycache__/
