@@ -19,6 +19,14 @@ import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080").rstrip("/")
 UA = "gateway-test/1.0 (own lab)"
+
+# On Windows, "localhost" is tried as IPv6 (::1) first; Docker only listens on 127.0.0.1, so every new
+# connection waits for that attempt to fail. Connect to 127.0.0.1 directly but keep "localhost" as the
+# Host header, which is what a browser sends (a numeric Host header raises the WAF's anomaly score).
+_parts = urllib.parse.urlsplit(BASE)
+HOST_HEADER = _parts.netloc
+if _parts.hostname == "localhost":
+    BASE = urllib.parse.urlunsplit(_parts._replace(netloc=_parts.netloc.replace("localhost", "127.0.0.1", 1)))
 FORM = {"name": "WAF-Test", "email": "waf-test@example.com", "phone": "9876543210"}
 
 
@@ -37,7 +45,7 @@ def fetch(path, query=None, form=None, raw_body=None, agent=UA):
     if query is not None:
         url += "?" + (query if isinstance(query, str) else urllib.parse.urlencode(query))
     data = raw_body if raw_body is not None else (urllib.parse.urlencode(form).encode() if form else None)
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": agent})
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": agent, "Host": HOST_HEADER})
     if data is not None:
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
@@ -74,15 +82,20 @@ def flood_rate_limit():
     from concurrent.futures import ThreadPoolExecutor
 
     def one(_):
-        req = urllib.request.Request(BASE + "/style.css", headers={"User-Agent": UA})
+        req = urllib.request.Request(BASE + "/style.css", headers={"User-Agent": UA, "Host": HOST_HEADER})
         try:
             with OPENER.open(req, timeout=15) as r:
                 return r.status
         except urllib.error.HTTPError as e:
             return e.code
 
+    start = time.monotonic()
     with ThreadPoolExecutor(max_workers=30) as pool:
         codes = list(pool.map(one, range(150)))
+    seconds = time.monotonic() - start
+    print(f"        flood: {codes.count(200)} x 200, {codes.count(429)} x 429, "
+          f"others {len(codes) - codes.count(200) - codes.count(429)}, "
+          f"{len(codes) / seconds:.0f} requests/second")
     time.sleep(3)                        # let the bucket refill
     return 429 if 429 in codes and 200 in codes else 599
 
@@ -144,7 +157,7 @@ CASES = [
 
 
 def main():
-    print(f"Testing gateway at {BASE}\n")
+    print(f"Testing gateway at {BASE} (Host: {HOST_HEADER})\n")
     failures = 0
     for group, text, expected, run in CASES:
         code = run()
