@@ -51,7 +51,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=LAB_TLS))
 
 
-def fetch(path, query=None, form=None, raw_body=None, agent=UA, base=None, host=None, headers=None, json_body=None):
+def fetch(path, query=None, form=None, raw_body=None, agent=UA, base=None, host=None, headers=None, json_body=None,
+          method=None):
     """Return (status code, body text, headers) without following redirects."""
     time.sleep(0.06)                     # stay under the gateway's per-visitor rate limit
     url = (base or BASE) + path
@@ -60,7 +61,8 @@ def fetch(path, query=None, form=None, raw_body=None, agent=UA, base=None, host=
     data = raw_body if raw_body is not None else (urllib.parse.urlencode(form).encode() if form else None)
     if json_body is not None:
         data = json.dumps(json_body).encode()
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": agent, "Host": host or HOST_HEADER, **(headers or {})})
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"User-Agent": agent, "Host": host or HOST_HEADER, **(headers or {})})
     if data is not None:
         req.add_header("Content-Type", "application/json" if json_body is not None else "application/x-www-form-urlencoded")
     try:
@@ -116,6 +118,12 @@ def portal_login(username, password):
     return portal("/api/firstfactor", json_body={
         "username": username, "password": password, "keepMeLoggedIn": False,
         "targetURL": f"https://{APP_HOST}/messages.php", "requestMethod": "GET"})[0]
+
+
+def passes_waf(code_body_headers):
+    """True when the response did not come from the gateway's block page (Authelia may still say no itself)."""
+    code, body, _ = code_body_headers
+    return 599 if "Your request was blocked" in body else code
 
 
 def login_rate_limit():
@@ -211,6 +219,9 @@ CASES = [
     ("G4", "Portal script with 'Password' in its name is not blocked (rule 1003)", ALLOW,
      lambda: portal("/static/js/hooks.PasswordVisibility.BkfT-6fZ.js")[0]),
     ("G4", "Restricted files are still blocked on the portal: /static/.passwd", BLOCK, lambda: portal("/static/.passwd")[0]),
+    ("G4", "Portal API may use PUT, e.g. checking the code when adding a phone (rule 1004)", ALLOW,
+     lambda: passes_waf(portal("/api/user/session/elevation", method="PUT", json_body={"otc": "ABCD1234"}))),
+    ("G4", "The app itself still refuses PUT", BLOCK, lambda: app_https("/contact.php", method="PUT", form={"x": "1"})[0]),
     ("G4", "WAF also protects the portal: <script> in ?rd=", BLOCK, lambda: portal("/", {"rd": "<script>alert(1)</script>"})[0]),
     ("G4", "Portal: wrong password with symbols is refused by Authelia, not the WAF (rule 1002)", ALLOW,
      lambda: portal_login("gateway-test", "Sunset' OR 2024--x <b>")),

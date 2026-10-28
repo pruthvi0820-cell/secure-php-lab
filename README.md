@@ -102,7 +102,7 @@ Review `logs/block.txt` by hand before copying an address into `gateway/deny.con
 python tests/gateway_test.py
 ```
 
-It runs 43 checks (15 attacks, 7 normal visits, 4 tuning cases, 7 gateway checks, 10 zero-trust checks:
+It runs 45 checks (15 attacks, 7 normal visits, 4 tuning cases, 7 gateway checks, 12 zero-trust checks:
 HTTPS redirect, portal redirect, forged headers, portal WAF) and prints PASS/FAIL for each.
 Reading why a request was blocked: `docker compose logs proxy --tail 5` (look for `ruleId` and `message`).
 
@@ -135,6 +135,9 @@ Decisions worth noting:
 - First real-browser test: the portal stayed blank. The browser console showed 403s for Authelia's own scripts
   (`hooks.PasswordVisibility...js`): CRS rule 930130 lists `.pass` as a restricted file name. Rule 1003 skips
   only 930130, only for plain `.js` names under `/static/js/`; `/.passwd` and similar are still blocked.
+- Next, registering a phone failed: the one-time code is checked with an HTTP `PUT`, and CRS rule 911100 allows only
+  GET/HEAD/POST/OPTIONS. Rule 1004 allows PUT and DELETE only under `/api/` (Authelia's API); the PHP app has no
+  `/api/` and still refuses them.
 - The WAF is switched off only for nginx's internal "ask Authelia" subrequest, whose original request was
   already inspected (CRS rule 920170 otherwise misreads it as a GET with a body).
 
