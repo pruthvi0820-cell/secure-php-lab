@@ -1,0 +1,19 @@
+# Shared protections for every gateway site (app and Authelia portal). Included at server level.
+
+# Rate limit for all pages; "burst" lets a page load its CSS and scripts in one go.
+limit_req zone=per_ip burst=40 nodelay;
+
+# Ban list: IP addresses you decided to block (edit gateway/deny.conf, then restart the proxy).
+include /etc/nginx/gateway/deny.conf;
+
+# Our own pages instead of nginx's "403 Forbidden ... nginx" (which also reveals the software).
+error_page 403 /errors/blocked.html;
+error_page 429 /errors/slow-down.html;
+
+location ^~ /errors/ {
+    internal;                         # only reachable as an error page, never by typing the URL
+    allow all;                        # banned visitors must still be able to see why
+    modsecurity off;                  # the page itself never needs inspecting
+    ssi on;                           # lets the page print the time of the block
+    root /usr/share/nginx/gateway;
+}

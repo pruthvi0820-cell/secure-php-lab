@@ -1,30 +1,49 @@
-# G3: rules shared by every server block of the gateway.
+# Rules for the app (http://localhost:8080 and https://app.localtest.me:8443).
 # Replaces the image's own includes/location_common.conf.template (health check and status page kept below).
 
-# Rate limit for all pages; "burst" lets a page load its CSS and images in one go.
-limit_req zone=per_ip burst=40 nodelay;
+include includes/protect.conf;
 
-# Ban list: IP addresses you decided to block (edit gateway/deny.conf, then restart the proxy).
-include /etc/nginx/gateway/deny.conf;
-
-# Our own pages instead of nginx's "403 Forbidden ... nginx" (which also reveals the software).
-error_page 403 /errors/blocked.html;
-error_page 429 /errors/slow-down.html;
-
-location ^~ /errors/ {
-    internal;                         # only reachable as an error page, never by typing the URL
-    allow all;                        # banned visitors must still be able to see why
-    modsecurity off;                  # the page itself never needs inspecting
-    ssi on;                           # lets the page print the time of the block
-    root /usr/share/nginx/gateway;
+# G4: ask Authelia whether the visitor is verified. Internal only; called by auth_request below.
+location /internal/authelia/authz {
+    internal;
+    modsecurity off;    # the visitor's real request was already inspected; this internal check is a GET that
+                        # still carries the form's Content-Length, which CRS rule 920170 would wrongly block
+    # Plain HTTP cannot carry Authelia's secure cookie, so it is never "verified"; the 401 below sends the
+    # visitor to the HTTPS site. Done here (after the WAF has checked the request), not with an early "return".
+    if ($scheme = http) {
+        return 401;
+    }
+    set $authelia_authz ${AUTHELIA_UPSTREAM}/api/authz/auth-request;
+    proxy_pass $authelia_authz;
+    proxy_set_header X-Original-Method $request_method;
+    proxy_set_header X-Original-URL $scheme://$http_host$request_uri;   # $http_host keeps the :8443 port
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header Remote-User "";                                    # never forward a visitor's own value
+    proxy_set_header Content-Length "";
+    proxy_set_header Connection "";
+    proxy_pass_request_body off;
+    proxy_http_version 1.1;
 }
 
-# Login: slow down password guessing before PHP's own lockout even starts counting.
-location = /login.php {
+# G4: the admin area (PHP login, register, logout, messages) is zero-trust:
+# nobody reaches PHP for these pages without a password + phone code checked by Authelia first.
+location ~ ^/(?:login|register|logout|messages)\.php$ {
     limit_req zone=per_ip burst=40 nodelay;
-    limit_req zone=login_post burst=5 nodelay;
+    limit_req zone=login_post burst=5 nodelay;      # password guessing, counted before Authelia is even asked
+
+    auth_request /internal/authelia/authz;
+    auth_request_set $user $upstream_http_remote_user;
+    auth_request_set $groups $upstream_http_remote_groups;
+    auth_request_set $redirection_url $upstream_http_location;
+    error_page 401 =302 $admin_auth_redirect;       # not verified: HTTPS site / Authelia portal, then come back
+    error_page 403 /errors/blocked.html;            # an error_page here replaces the inherited ones,
+    error_page 429 /errors/slow-down.html;          # so the block pages are repeated
+
     include includes/cors.conf;
     include includes/proxy_backend.conf;
+    # Set here, after the include, so a visitor can never send their own Remote-User header to PHP.
+    proxy_set_header Remote-User $user;
+    proxy_set_header Remote-Groups $groups;
 }
 
 # Webshells: a PHP file inside an upload or media folder is never legitimate.

@@ -1,6 +1,9 @@
 <?php
 require __DIR__ . "/../src/bootstrap.php";
 $user = require_login();
+// Set by the gateway after Authelia verified password + phone code. The gateway overwrites any value a
+// visitor sends, and PHP cannot be reached except through the gateway, so this can be trusted here.
+$gatewayUser = $_SERVER["HTTP_REMOTE_USER"] ?? "";
 
 $q = trim($_GET["q"] ?? "");
 $rows = [];
@@ -25,6 +28,9 @@ try {
   <h1>Messages</h1>
   <div>
     Logged in as <b><?= e($user["username"]) ?></b>
+    <?php if ($gatewayUser !== ""): ?>
+      &middot; verified by the security gateway (password + phone code) as <b><?= e($gatewayUser) ?></b>
+    <?php endif; ?>
     <form method="post" action="logout.php" class="inline">
       <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
       <button type="submit">Log out</button>

@@ -12,10 +12,13 @@ Built by Pruthvi DR while learning PHP, with AI guidance (Claude).
 - **Messages page** visible only to the logged-in admin, with search
 - **Security gateway** in front of the app: a web application firewall (WAF) that blocks attacks
   before they reach PHP
+- **Zero-trust admin area**: the admin pages cannot even be reached without a password and a 6-digit code
+  from an authenticator app, checked by Authelia at the gateway, before PHP's own login
 
 ```
-Browser ──► Gateway: nginx + ModSecurity + OWASP Core Rule Set ──► PHP 8.4 ──► MySQL 8.4
-            (the only open port)                                    (hidden)    (hidden)
+Browser ──► Security gateway: nginx + ModSecurity WAF + OWASP CRS ──► PHP 8.4 ──► MySQL 8.4
+            WAF · rate limits · ban list · block pages                 (hidden)    (hidden)
+            admin pages ──► Authelia: password + phone code (hidden)
 ```
 
 ## Security features
@@ -38,6 +41,8 @@ Browser ──► Gateway: nginx + ModSecurity + OWASP Core Rule Set ──► P
 | Floods and password guessing | Gateway rate limits: 20 requests/s per visitor, 10 login attempts/min per visitor, then **429** | `gateway/nginx/` |
 | Webshells | A PHP file requested from an upload or media folder is refused at the gateway | `gateway/nginx/location_common.conf.template` |
 | Known attackers | Ban list (`deny` lines) checked before anything else; candidates found with PHPGuard | `gateway/deny.conf` |
+| Stolen or guessed admin password | Zero-trust gateway login: Authelia requires password + TOTP code (2FA) before any admin page reaches PHP; 3 failures lock the user for 5 minutes | `authelia/configuration.yml` |
+| Forged identity headers | The gateway overwrites `Remote-User` on every admin request, so a visitor cannot claim to be someone else | `gateway/nginx/location_common.conf.template` |
 | Spoofed visitor IP | Apache `mod_remoteip` trusts `X-Real-IP` only from Docker's private network, so brute-force limits use the real IP | `compose.yaml` |
 
 ## Run it
@@ -50,8 +55,9 @@ cp .env.example .env        # Windows: copy .env.example .env
 docker compose up --build
 ```
 
-Open http://localhost:8080/register.php to create the admin account, then
-http://localhost:8080/contact.php and http://localhost:8080/messages.php.
+Run `python authelia/setup.py` once first (see *Zero-trust admin area*). Then open
+https://app.localtest.me:8443/register.php to create the app's admin account (after the gateway login),
+and http://localhost:8080/contact.php for the public form.
 
 The app listens on `127.0.0.1` only, so it is not reachable from other devices on the network.
 
@@ -96,9 +102,38 @@ Review `logs/block.txt` by hand before copying an address into `gateway/deny.con
 python tests/gateway_test.py
 ```
 
-It runs 33 checks (15 attacks, 7 normal visits, 4 tuning cases, 7 gateway checks: block page, webshells,
-health check, login and flood rate limits) and prints PASS/FAIL for each.
+It runs 41 checks (15 attacks, 7 normal visits, 4 tuning cases, 7 gateway checks, 8 zero-trust checks:
+HTTPS redirect, portal redirect, forged headers, portal WAF) and prints PASS/FAIL for each.
 Reading why a request was blocked: `docker compose logs proxy --tail 5` (look for `ruleId` and `message`).
+
+## Zero-trust admin area (G4)
+
+The admin pages (`login.php`, `register.php`, `logout.php`, `messages.php`) are protected **at the gateway**
+by [Authelia](https://www.authelia.com) (4.39). For every request to them, nginx asks Authelia
+(`auth_request`) whether the visitor has passed **password + one-time code from a phone**; if not, the
+visitor is sent to the Authelia portal and PHP never sees the request. After that, PHP's own login still
+applies: two independent layers. `messages.php` shows the identity the gateway verified.
+
+| URL | What |
+|---|---|
+| `http://localhost:8080` | Public pages (admin pages redirect to HTTPS) |
+| `https://app.localtest.me:8443` | The app over HTTPS |
+| `https://auth.localtest.me:8443` | The Authelia login portal |
+
+`localtest.me` is a public domain whose every name points to `127.0.0.1`, which gives the browser real
+domain names for the login cookie without editing the hosts file. The lab certificate is self-signed, so
+the browser warns once per site.
+
+Setup, once: `python authelia/setup.py` creates the three secrets and your gateway account (the password
+is stored only as an Argon2 hash). Both are in `.gitignore`. Authelia's one-time codes for registering a
+phone are written to a file inside its container: `docker compose exec authelia cat /data/notification.txt`.
+
+Decisions worth noting:
+- `default_policy: deny`: anything not explicitly listed is refused.
+- No "remember me", 5-minute idle timeout, 1-hour maximum session.
+- The WAF still inspects the portal; rule 1002 exempts only the JSON `password` field, for the same reason as rule 1000.
+- The WAF is switched off only for nginx's internal "ask Authelia" subrequest, whose original request was
+  already inspected (CRS rule 920170 otherwise misreads it as a GET with a body).
 
 ## Project layout
 
@@ -109,11 +144,12 @@ src/         code that is never served directly
   bootstrap.php   loads helpers and sends security headers on every page
   auth.php        sessions, CSRF tokens, brute-force limits
   db.php          database connection (settings from environment variables)
-gateway/     WAF tuning rules (REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf), nginx rate limits
-             and shared rules (nginx/), ban list (deny.conf), block pages (errors/)
+gateway/     WAF tuning rules (REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf), nginx rate limits,
+             Authelia portal and shared rules (nginx/), ban list (deny.conf), block pages (errors/)
+authelia/    configuration.yml, setup.py (creates secrets/ and users_database.yml, both git-ignored)
 tests/       gateway_test.py: automated attack and false-positive test
 init.sql, users.sql   database tables (loaded automatically on first start)
-compose.yaml          WAF gateway, PHP 8.4 + Apache, MySQL 8.4
+compose.yaml          WAF gateway, Authelia, PHP 8.4 + Apache, MySQL 8.4
 ```
 
 ## Manual security tests
@@ -132,5 +168,5 @@ compose.yaml          WAF gateway, PHP 8.4 + Apache, MySQL 8.4
 ## Not production-ready (yet)
 
 This is a learning project. A real deployment would also need HTTPS (and the cookie `secure` flag),
-two-factor login, email verification and password reset, and unit tests.
-The next steps of this project add a zero-trust login (Authelia with 2FA) and HTTPS.
+a certificate from a real CA, an SMTP server for Authelia's notifications, email verification and
+password reset in the app, and unit tests.

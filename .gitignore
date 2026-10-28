@@ -1,5 +1,7 @@
 # Secrets: never commit these
 .env
+authelia/secrets/
+authelia/users_database.yml
 
 # Logs and PHPGuard output (may contain visitor IP addresses)
 *.log

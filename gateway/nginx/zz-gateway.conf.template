@@ -1,5 +1,6 @@
-# G3: rate limits. This file is loaded at the "http" level of nginx.
-# Visitors are counted by their real IP address.
+# G3/G4: loaded at the "http" level of nginx.
+
+# --- G3: rate limits. Visitors are counted by their real IP address. ---
 
 # Every page: up to 20 requests per second per visitor (a normal page view needs only a few).
 limit_req_zone $binary_remote_addr zone=per_ip:10m rate=20r/s;
@@ -13,3 +14,40 @@ limit_req_zone $login_post_key zone=login_post:10m rate=10r/m;
 
 limit_req_status 429;                 # "Too Many Requests"
 limit_req_log_level warn;
+
+# --- G4: where to send a visitor who is not verified ---
+# Over HTTPS: the Authelia portal (Authelia's answer, in $redirection_url).
+# Over plain HTTP: the same page on the HTTPS site first, because the login cookie needs HTTPS.
+map $scheme $admin_auth_redirect {
+    http    "${APP_HTTPS_ORIGIN}$request_uri";
+    default $redirection_url;
+}
+
+# --- G4: the Authelia login portal, https://auth.localtest.me:8443 ---
+# Same certificate, WAF, rate limits, ban list and block pages as the app.
+server {
+    listen ${SSL_PORT} ssl;
+    server_name ${AUTHELIA_HOST};
+
+    ssl_certificate ${SSL_CERT_FILE};
+    ssl_certificate_key ${SSL_CERT_KEY_FILE};
+    ssl_protocols ${SSL_PROTOCOLS};
+
+    include includes/protect.conf;
+
+    location / {
+        limit_req zone=per_ip burst=40 nodelay;
+        limit_req zone=login_post burst=5 nodelay;  # also slows password guessing on the portal
+
+        set $authelia_portal ${AUTHELIA_UPSTREAM};
+        proxy_pass $authelia_portal;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;   # keeps the :8443 port, which Authelia checks
+        proxy_set_header X-Forwarded-URI $request_uri;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_redirect http:// $scheme://;
+    }
+}

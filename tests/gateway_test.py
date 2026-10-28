@@ -11,6 +11,8 @@ The last two tests trip the rate limits on purpose: for about a minute afterward
 logging in from this computer may show "Slow down, please". That is the gateway working.
 """
 
+import json
+import ssl
 import sys
 import time
 import urllib.error
@@ -30,24 +32,37 @@ if _parts.hostname == "localhost":
 FORM = {"name": "WAF-Test", "email": "waf-test@example.com", "phone": "9876543210"}
 
 
+# G4: the HTTPS side of the gateway, and the two site names it serves there.
+HTTPS_BASE = "https://127.0.0.1:8443"
+APP_HOST, AUTH_HOST = "app.localtest.me:8443", "auth.localtest.me:8443"
+
+# The lab uses a self-signed certificate that changes on every restart, so this test (and only this test)
+# skips certificate checks. Never do this in code that talks to real servers.
+LAB_TLS = ssl.create_default_context()
+LAB_TLS.check_hostname = False
+LAB_TLS.verify_mode = ssl.CERT_NONE
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None                      # report the 302 itself instead of following it
 
 
-OPENER = urllib.request.build_opener(NoRedirect)
+OPENER = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=LAB_TLS))
 
 
-def fetch(path, query=None, form=None, raw_body=None, agent=UA):
+def fetch(path, query=None, form=None, raw_body=None, agent=UA, base=None, host=None, headers=None, json_body=None):
     """Return (status code, body text, headers) without following redirects."""
     time.sleep(0.06)                     # stay under the gateway's per-visitor rate limit
-    url = BASE + path
+    url = (base or BASE) + path
     if query is not None:
         url += "?" + (query if isinstance(query, str) else urllib.parse.urlencode(query))
     data = raw_body if raw_body is not None else (urllib.parse.urlencode(form).encode() if form else None)
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": agent, "Host": HOST_HEADER})
+    if json_body is not None:
+        data = json.dumps(json_body).encode()
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": agent, "Host": host or HOST_HEADER, **(headers or {})})
     if data is not None:
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        req.add_header("Content-Type", "application/json" if json_body is not None else "application/x-www-form-urlencoded")
     try:
         with OPENER.open(req, timeout=15) as r:
             return r.status, r.read().decode("utf-8", "replace"), r.headers
@@ -56,7 +71,7 @@ def fetch(path, query=None, form=None, raw_body=None, agent=UA):
     except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
         if raw_body is not None:         # the gateway may cut off an oversized upload mid-send
             return 413, "", {}
-        raise SystemExit(f"Cannot reach {BASE}: {e}\nIs `docker compose up` running?")
+        raise SystemExit(f"Cannot reach {base or BASE}: {e}\nIs `docker compose up` running?")
 
 
 def status(*args, **kwargs):
@@ -69,6 +84,38 @@ def custom_block_page():
     if code == 403 and "Your request was blocked" in body and "nginx" not in body.lower() and not headers.get("Server"):
         return 403
     return 599                           # anything else counts as a failure
+
+
+def redirects_to(expected_prefix, path, **kwargs):
+    """302 whose Location starts with expected_prefix counts as success (reported as 302)."""
+    code, _, headers = fetch(path, **kwargs)
+    location = headers.get("Location", "") if headers else ""
+    if code == 302 and location.startswith(expected_prefix):
+        return 302
+    print(f"        got {code}, Location: {location or '(none)'}")
+    return 599
+
+
+def app_https(path, query=None, **kwargs):
+    return fetch(path, query, base=HTTPS_BASE, host=APP_HOST, **kwargs)
+
+
+def portal(path, query=None, **kwargs):
+    return fetch(path, query, base=HTTPS_BASE, host=AUTH_HOST, **kwargs)
+
+
+def portal_is_up():
+    code, body, _ = portal("/")
+    if code == 200 and "authelia" in body.lower():
+        return 200
+    print(f"        got {code}; is the authelia container running? (docker compose ps)")
+    return 599
+
+
+def portal_login(username, password):
+    return portal("/api/firstfactor", json_body={
+        "username": username, "password": password, "keepMeLoggedIn": False,
+        "targetURL": f"https://{APP_HOST}/messages.php", "requestMethod": "GET"})[0]
 
 
 def login_rate_limit():
@@ -151,6 +198,21 @@ CASES = [
     ("G3", "Webshell: /images/avatar.phtml", BLOCK, lambda: status("/images/avatar.phtml")),
     ("G3", "Error pages cannot be opened directly", ALLOW, lambda: status("/errors/blocked.html")),
     ("G3", "Health check for monitoring: /healthz", ALLOW, lambda: status("/healthz")),
+
+    ("G4", "Admin page over plain HTTP is sent to the HTTPS site", ALLOW,
+     lambda: redirects_to(f"https://{APP_HOST}/messages.php", "/messages.php")),
+    ("G4", "Admin page without 2FA is sent to the Authelia portal", ALLOW,
+     lambda: redirects_to(f"https://{AUTH_HOST}/", "/messages.php", base=HTTPS_BASE, host=APP_HOST)),
+    ("G4", "Forged Remote-User header and fake cookie do not get in", ALLOW,
+     lambda: redirects_to(f"https://{AUTH_HOST}/", "/messages.php", base=HTTPS_BASE, host=APP_HOST,
+                          headers={"Remote-User": "admin", "Cookie": "authelia_session=forged"})),
+    ("G4", "Public page still open over HTTPS", ALLOW, lambda: app_https("/contact.php")[0]),
+    ("G4", "Authelia portal is reachable through the gateway", ALLOW, portal_is_up),
+    ("G4", "WAF also protects the portal: <script> in ?rd=", BLOCK, lambda: portal("/", {"rd": "<script>alert(1)</script>"})[0]),
+    ("G4", "Portal: wrong password with symbols is refused by Authelia, not the WAF (rule 1002)", ALLOW,
+     lambda: portal_login("gateway-test", "Sunset' OR 2024--x <b>")),
+    ("G4", "Portal: SQL injection in the username is blocked by the WAF", BLOCK,
+     lambda: portal_login("admin' OR '1'='1", "x")),
     ("G3", "Password guessing: 12 fast logins get 429", LIMIT, login_rate_limit),
     ("G3", "Flood: 150 parallel requests get some 429", LIMIT, flood_rate_limit),
 ]

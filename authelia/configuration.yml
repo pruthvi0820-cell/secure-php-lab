@@ -1,0 +1,74 @@
+# G4: Authelia, the zero-trust login in front of the admin area.
+# Written for Authelia 4.39 (see https://www.authelia.com/configuration/prologue/introduction/).
+# Secrets are NOT in this file: they come from authelia/secrets/ (created by authelia/setup.py, never committed).
+
+theme: 'auto'
+
+server:
+  address: 'tcp://:9091/'
+  endpoints:
+    authz:
+      auth-request:
+        implementation: 'AuthRequest'      # the protocol nginx's auth_request speaks
+
+log:
+  level: 'info'
+
+totp:
+  issuer: 'Secure PHP Lab'                 # the name shown in your authenticator app
+  digits: 6
+  period: 30
+
+ntp:
+  disable_failure: true                    # warn instead of refusing to start if the time check fails
+
+identity_validation:
+  reset_password:
+    jwt_algorithm: 'HS256'                 # the secret itself is read from /run/secrets/authelia_jwt_secret
+
+authentication_backend:
+  password_reset:
+    disable: true                          # no email server in the lab; reset by editing users_database.yml
+  password_change:
+    disable: true
+  file:
+    path: '/config/users_database.yml'
+    watch: false
+    password:
+      algorithm: 'argon2'
+
+access_control:
+  default_policy: 'deny'                   # zero trust: anything not listed below is refused
+  rules:
+    - domain: 'app.localtest.me'
+      resources:
+        - '^/(login|register|logout|messages)\.php([?].*)?$'
+      policy: 'two_factor'                 # admin area: password + phone code
+    - domain: 'app.localtest.me'
+      policy: 'bypass'                     # public pages (home, contact) stay open
+
+session:
+  cookies:
+    - name: 'authelia_session'
+      domain: 'localtest.me'
+      authelia_url: 'https://auth.localtest.me:8443'
+      default_redirection_url: 'https://app.localtest.me:8443/messages.php'
+      same_site: 'lax'
+      inactivity: '5 minutes'              # idle for 5 minutes: log in again
+      expiration: '1 hour'                 # at most 1 hour per login
+      remember_me: -1                      # no "remember me": every visit is verified
+
+regulation:
+  modes:
+    - 'user'
+  max_retries: 3                           # 3 wrong passwords within 2 minutes ...
+  find_time: '2 minutes'
+  ban_time: '5 minutes'                    # ... lock that user out for 5 minutes
+
+storage:
+  local:
+    path: '/data/db.sqlite3'
+
+notifier:
+  filesystem:
+    filename: '/data/notification.txt'     # "emails" (like the one-time code to add your phone) land here

@@ -2,9 +2,13 @@ services:
   proxy:
     image: owasp/modsecurity-crs:4.30.0-nginx-alpine-202610051210
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8080:8080"           # http://localhost:8080          public pages
+      - "127.0.0.1:8443:8443"           # https://app.localtest.me:8443  and https://auth.localtest.me:8443
     environment:
       BACKEND: "http://web:80"
+      AUTHELIA_UPSTREAM: "http://authelia:9091"          # G4: the zero-trust login service
+      AUTHELIA_HOST: "auth.localtest.me"
+      APP_HTTPS_ORIGIN: "https://app.localtest.me:8443"
       SERVER_HEADER: ""                 # remove the Server header completely
       BLOCKING_PARANOIA: "1"            # 1 = few false positives (start here); 4 = strictest
       ANOMALY_INBOUND: "5"              # block a request when its attack score reaches 5
@@ -18,10 +22,27 @@ services:
       # G3: rate limits, custom block pages, ban list, webshell rule
       - ./gateway/nginx/zz-gateway.conf.template:/etc/nginx/templates/conf.d/zz-gateway.conf.template:ro
       - ./gateway/nginx/location_common.conf.template:/etc/nginx/templates/includes/location_common.conf.template:ro
+      - ./gateway/nginx/protect.conf.template:/etc/nginx/templates/includes/protect.conf.template:ro
       - ./gateway/deny.conf:/etc/nginx/gateway/deny.conf:ro
       - ./gateway/errors:/usr/share/nginx/gateway/errors:ro
     depends_on:
       - web
+
+  # G4: zero-trust login. Not published to the host: only the gateway can talk to it.
+  authelia:
+    image: authelia/authelia:4.39.28
+    environment:
+      AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_encryption_key
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
+    volumes:
+      - ./authelia/configuration.yml:/config/configuration.yml:ro
+      - ./authelia/users_database.yml:/config/users_database.yml:ro
+      - authelia_data:/data                                 # 2FA registrations and the notification file
+    secrets:
+      - authelia_session_secret
+      - authelia_storage_encryption_key
+      - authelia_jwt_secret
 
   web:
     build:
@@ -64,3 +85,13 @@ services:
 
 volumes:
   dbdata:
+  authelia_data:
+
+# Created by authelia/setup.py; listed in .gitignore.
+secrets:
+  authelia_session_secret:
+    file: ./authelia/secrets/session_secret
+  authelia_storage_encryption_key:
+    file: ./authelia/secrets/storage_encryption_key
+  authelia_jwt_secret:
+    file: ./authelia/secrets/jwt_secret
