@@ -9,6 +9,10 @@ services:
       AUTHELIA_UPSTREAM: "http://authelia:9091"          # G4: the zero-trust login service
       AUTHELIA_HOST: "auth.localtest.me"
       APP_HTTPS_ORIGIN: "https://app.localtest.me:8443"
+      # G5: certificate made by mkcert and trusted by this computer (see README); replaces the self-signed one.
+      SSL_CERT_FILE: "/etc/nginx/certs/localtest.pem"
+      SSL_CERT_KEY_FILE: "/etc/nginx/certs/localtest-key.pem"
+      SSL_OCSP_STAPLING: "off"                           # a local CA has no OCSP server
       SERVER_HEADER: ""                 # remove the Server header completely
       BLOCKING_PARANOIA: "1"            # 1 = few false positives (start here); 4 = strictest
       ANOMALY_INBOUND: "5"              # block a request when its attack score reaches 5
@@ -25,6 +29,7 @@ services:
       - ./gateway/nginx/protect.conf.template:/etc/nginx/templates/includes/protect.conf.template:ro
       - ./gateway/deny.conf:/etc/nginx/gateway/deny.conf:ro
       - ./gateway/errors:/usr/share/nginx/gateway/errors:ro
+      - ./gateway/certs:/etc/nginx/certs:ro             # G5: created by mkcert, git-ignored (contains a private key)
     depends_on:
       - web
 

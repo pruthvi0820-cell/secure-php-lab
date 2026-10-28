@@ -55,7 +55,7 @@ cp .env.example .env        # Windows: copy .env.example .env
 docker compose up --build
 ```
 
-Run `python authelia/setup.py` once first (see *Zero-trust admin area*). Then open
+Run `python authelia/setup.py` once and create the certificate (see *Trusted HTTPS*) first. Then open
 https://app.localtest.me:8443/register.php to create the app's admin account (after the gateway login),
 and http://localhost:8080/contact.php for the public form.
 
@@ -121,8 +121,7 @@ applies: two independent layers. `messages.php` shows the identity the gateway v
 | `https://auth.localtest.me:8443` | The Authelia login portal |
 
 `localtest.me` is a public domain whose every name points to `127.0.0.1`, which gives the browser real
-domain names for the login cookie without editing the hosts file. The lab certificate is self-signed, so
-the browser warns once per site.
+domain names for the login cookie without editing the hosts file.
 
 Setup, once: `python authelia/setup.py` creates the three secrets and your gateway account (the password
 is stored only as an Argon2 hash). Both are in `.gitignore`. Authelia's one-time codes for registering a
@@ -140,6 +139,23 @@ Decisions worth noting:
   `/api/` and still refuses them.
 - The WAF is switched off only for nginx's internal "ask Authelia" subrequest, whose original request was
   already inspected (CRS rule 920170 otherwise misreads it as a GET with a body).
+
+## Trusted HTTPS (G5)
+
+The gateway uses a certificate made with [mkcert](https://github.com/FiloSottile/mkcert), which creates a
+small certificate authority (CA) that only **this computer** trusts. The browser shows a normal padlock for
+`localhost`, `app.localtest.me` and `auth.localtest.me`, and nothing changes for any other computer.
+
+```bash
+mkcert -install                                   # once per computer: trust the local CA
+mkcert -cert-file gateway/certs/localtest.pem -key-file gateway/certs/localtest-key.pem \
+       localhost app.localtest.me auth.localtest.me 127.0.0.1
+```
+
+`gateway/certs/` is git-ignored because it holds the private key. Never share mkcert's `rootCA-key.pem`
+(see `mkcert -CAROOT`): anyone with it could create certificates your browser would trust for any website.
+`mkcert -uninstall` removes the CA. On a real server the certificate would come from a public CA such as
+Let's Encrypt instead.
 
 ## Project layout
 
@@ -173,6 +189,7 @@ compose.yaml          WAF gateway, Authelia, PHP 8.4 + Apache, MySQL 8.4
 
 ## Not production-ready (yet)
 
-This is a learning project. A real deployment would also need HTTPS (and the cookie `secure` flag),
-a certificate from a real CA, an SMTP server for Authelia's notifications, email verification and
-password reset in the app, and unit tests.
+This is a learning project. A real deployment would also need a certificate from a public CA, the PHP
+session cookie's `secure` flag and HSTS once everything is HTTPS-only, an SMTP server for Authelia's
+notifications, central logging and alerting, backups, email verification and password reset in the app,
+and unit tests.

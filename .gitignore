@@ -2,6 +2,7 @@
 .env
 authelia/secrets/
 authelia/users_database.yml
+gateway/certs/
 
 # Logs and PHPGuard output (may contain visitor IP addresses)
 *.log
