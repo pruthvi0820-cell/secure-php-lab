@@ -123,7 +123,9 @@ def portal_login(username, password):
 def passes_waf(code_body_headers):
     """True when the response did not come from the gateway's block page (Authelia may still say no itself)."""
     code, body, _ = code_body_headers
-    return 599 if "Your request was blocked" in body else code
+    if "Your request was blocked" in body:
+        return 599
+    return 200                           # past the WAF; Authelia's own answer (401, 403, ...) does not matter here
 
 
 def login_rate_limit():
